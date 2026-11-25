@@ -24,3 +24,9 @@ The target watch should expose the observed BLE service/characteristic. If the w
 6. Grant Nearby devices/Bluetooth permissions when prompted.
 
 Minimum Android: 8.0 (API 26). Android 12+ requires Nearby devices permission.
+
+
+## BLE scan fix (Android 6–10)
+- The app now requests both Fine and Coarse Location permissions on Android 6–10 and starts scanning automatically after permission is granted.
+- Android 6–10 also requires the phone's Location/GPS setting to be ON while scanning.
+- Scanning uses low-latency BLE mode and reports scan errors in the app.

@@ -5,6 +5,7 @@ import android.bluetooth.*
 import android.bluetooth.le.*
 import android.content.Context
 import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.graphics.Bitmap
 import android.graphics.Canvas as NativeCanvas
 import android.graphics.Paint
@@ -72,18 +73,76 @@ fun WatchFacesApp(activity: MainActivity) {
     var progress by remember { mutableFloatStateOf(0f) }
     val context = activity
     val adapter = remember { (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter }
-    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
-    val requiredPerms = if (Build.VERSION.SDK_INT >= 31) arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT) else arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+    // Android 6–10 requires runtime Location permission AND Location Services ON for BLE scans.
+    val requiredPerms = if (Build.VERSION.SDK_INT >= 31) {
+        arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+    } else {
+        arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+    }
     fun hasPerms() = requiredPerms.all { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
 
-    val scanner = remember { adapter.bluetoothLeScanner }
+    val scanner = remember(adapter) { adapter.bluetoothLeScanner }
     val scanCallback = remember {
         object: ScanCallback() {
             override fun onScanResult(type:Int, result:ScanResult) {
                 val d=result.device
                 if (devices.none { it.address == d.address }) devices = devices + d
             }
-            override fun onScanFailed(errorCode:Int) { scanning=false; status="Scan failed: $errorCode" }
+            override fun onBatchScanResults(results: MutableList<ScanResult>) {
+                results.forEach { result ->
+                    val d = result.device
+                    if (devices.none { it.address == d.address }) devices = devices + d
+                }
+            }
+            override fun onScanFailed(errorCode:Int) {
+                scanning=false
+                status="Scan failed: $errorCode. Bluetooth/Location setting check karein."
+            }
+        }
+    }
+
+    fun beginScan() {
+        if (!hasPerms()) {
+            status = "Nearby/Location permission allow karein."
+            return
+        }
+        if (Build.VERSION.SDK_INT <= 30) {
+            val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+            val locationOn = try {
+                (lm.isProviderEnabled(LocationManager.GPS_PROVIDER) || lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER))
+            } catch (_: Exception) { false }
+            if (!locationOn) {
+                scanning = false
+                status = "Phone ki Location setting ON karein, phir dobara SCAN dabayein."
+                return
+            }
+        }
+        val activeScanner = adapter.bluetoothLeScanner
+        if (activeScanner == null) {
+            scanning = false
+            status = "Bluetooth scanner available nahi. Bluetooth OFF/ON karein."
+            return
+        }
+        devices = emptyList()
+        scanning = true
+        status = "Scanning... Watch ko phone ke qareeb rakhein."
+        try {
+            activeScanner.startScan(null, ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(), scanCallback)
+        } catch (e: SecurityException) {
+            scanning = false
+            status = "Permission error: Settings > Apps > WATCH STUDIO > Location allow karein."
+        } catch (e: Exception) {
+            scanning = false
+            status = "Scan start nahi hua: ${e.message ?: "unknown error"}"
+        }
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+        if (requiredPerms.all { result[it] == true }) beginScan()
+        else {
+            scanning = false
+            status = if (Build.VERSION.SDK_INT <= 30) "Location permission deny hui. App permission settings mein Location allow karein."
+            else "Bluetooth permission deny hui. App permission settings mein Nearby devices allow karein."
         }
     }
 
@@ -114,11 +173,15 @@ fun WatchFacesApp(activity: MainActivity) {
                 }
             }
             Button(onClick={
-                if(!hasPerms()) { permissionLauncher.launch(requiredPerms) }
-                else if(!scanning) {
-                    devices= emptyList(); scanning=true; status="Scanning for watch..."
-                    try { scanner.startScan(scanCallback) } catch(e:Exception) { scanning=false; status=e.message ?: "Scan error" }
-                } else { try { scanner.stopScan(scanCallback) } catch(_:Exception) {}; scanning=false }
+                if (scanning) {
+                    try { adapter.bluetoothLeScanner?.stopScan(scanCallback) } catch (_: Exception) { }
+                    scanning = false
+                    status = "Scanning stopped."
+                } else if (!hasPerms()) {
+                    permissionLauncher.launch(requiredPerms)
+                } else {
+                    beginScan()
+                }
             }, modifier=Modifier.fillMaxWidth()) { Icon(Icons.Default.Bluetooth,null); Spacer(Modifier.width(8.dp)); Text(if(scanning) "STOP SCAN" else "SCAN FOR WATCH") }
             devices.forEach { d ->
                 TextButton(onClick={
